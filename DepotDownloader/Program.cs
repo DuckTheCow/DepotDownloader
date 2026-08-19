@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -159,7 +160,29 @@ namespace DepotDownloader
 
             #endregion
 
+            var appListPath = GetParameter<string>(args, "-applist");
             var appId = GetParameter(args, "-app", ContentDownloader.INVALID_APP_ID);
+
+            List<uint> appIds = null;
+
+            if (appListPath != null)
+            {
+                if (appId != ContentDownloader.INVALID_APP_ID)
+                {
+                    Console.WriteLine("Warning: -app is ignored because -applist was specified.");
+                }
+
+                appIds = await LoadAppListAsync(appListPath);
+
+                if (appIds.Count == 0)
+                {
+                    Console.WriteLine("Error: -applist '{0}' did not contain any valid app ids.", appListPath);
+                    return 1;
+                }
+
+                appId = appIds[0];
+            }
+
             if (appId == ContentDownloader.INVALID_APP_ID)
             {
                 Console.WriteLine("Error: -app not specified!");
@@ -311,13 +334,44 @@ namespace DepotDownloader
 
                 if (InitializeSteam(username, password))
                 {
+                    var appsToProcess = appIds ?? [appId];
+                    var isBatch = appsToProcess.Count > 1;
+                    var baseInstallDir = string.IsNullOrWhiteSpace(ContentDownloader.Config.InstallDirectory)
+                        ? ContentDownloader.DEFAULT_DOWNLOAD_DIR
+                        : ContentDownloader.Config.InstallDirectory;
+                    var succeededCount = 0;
+                    var failedCount = 0;
+                    var stopwatch = isBatch ? Stopwatch.StartNew() : null;
+
                     try
                     {
-                        await ContentDownloader.DownloadAppAsync(appId, depotManifestIds, branch, os, arch, language, lv, isUGC).ConfigureAwait(false);
+                        for (var i = 0; i < appsToProcess.Count; i++)
+                        {
+                            var currentAppId = appsToProcess[i];
+
+                            if (isBatch)
+                            {
+                                Console.WriteLine("[{0}/{1}] app {2}", i + 1, appsToProcess.Count, currentAppId);
+                                ContentDownloader.Config.InstallDirectory = Path.Combine(baseInstallDir, currentAppId.ToString());
+                            }
+
+                            try
+                            {
+                                // DepotConfigStore.Instance is a static singleton that refuses to load twice, so it must be
+                                // reset between apps even though everything else in DownloadAppAsync is safe to call repeatedly.
+                                DepotConfigStore.Instance = null;
+
+                                await ContentDownloader.DownloadAppAsync(currentAppId, new List<(uint depotId, ulong manifestId)>(depotManifestIds), branch, os, arch, language, lv, isUGC).ConfigureAwait(false);
+                                succeededCount++;
+                            }
+                            catch (ContentDownloaderException ex)
+                            {
+                                failedCount++;
+                                Console.WriteLine("Skipping app {0}: {1}", currentAppId, ex.Message);
+                            }
+                        }
                     }
-                    catch (Exception ex) when (
-                        ex is ContentDownloaderException
-                        || ex is OperationCanceledException)
+                    catch (OperationCanceledException ex)
                     {
                         Console.WriteLine(ex.Message);
                         return 1;
@@ -330,6 +384,17 @@ namespace DepotDownloader
                     finally
                     {
                         ContentDownloader.ShutdownSteam3();
+                    }
+
+                    if (isBatch)
+                    {
+                        stopwatch.Stop();
+                        Console.WriteLine("Processed {0} apps: {1} succeeded, {2} failed in {3}.", appsToProcess.Count, succeededCount, failedCount, stopwatch.Elapsed);
+
+                        if (succeededCount == 0)
+                        {
+                            return 1;
+                        }
                     }
                 }
                 else
@@ -462,6 +527,42 @@ namespace DepotDownloader
             return list;
         }
 
+        static async Task<List<uint>> LoadAppListAsync(string path)
+        {
+            var result = new List<uint>();
+            var seen = new HashSet<uint>();
+            string[] lines;
+
+            try
+            {
+                lines = await File.ReadAllLinesAsync(path);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Error: Unable to read -applist file '{0}': {1}", path, ex.Message);
+                return result;
+            }
+
+            foreach (var rawLine in lines)
+            {
+                var line = rawLine.Trim();
+
+                if (line.Length == 0 || line.StartsWith('#'))
+                {
+                    continue;
+                }
+
+                var field = line.Split(',')[0].Trim();
+
+                if (uint.TryParse(field, out var id) && seen.Add(id))
+                {
+                    result.Add(id);
+                }
+            }
+
+            return result;
+        }
+
         static void PrintUnconsumedArgs(string[] args)
         {
             var printError = false;
@@ -497,6 +598,7 @@ namespace DepotDownloader
             Console.WriteLine();
             Console.WriteLine("Parameters:");
             Console.WriteLine("  -app <#>                 - the AppID to download.");
+            Console.WriteLine("  -applist <file.txt>      - a file with one AppID per line; logs in once and downloads each app. Overrides -app.");
             Console.WriteLine("  -depot <#>               - the DepotID to download.");
             Console.WriteLine("  -manifest <id>           - manifest id of content to download (requires -depot, default: current for branch).");
             Console.WriteLine($"  -branch <branchname>    - download from specified branch if available (default: {ContentDownloader.DEFAULT_BRANCH}).");
