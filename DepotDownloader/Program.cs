@@ -352,6 +352,31 @@ namespace DepotDownloader
                     var successFilePath = Path.Combine(baseInstallDir, "success.txt");
                     var completedAppIds = new HashSet<uint>();
 
+                    // "already completed, skipping" is printed once per app by default, which floods the terminal
+                    // when most of the list is already done (e.g. resuming a large batch). Instead, consecutive
+                    // skips are collapsed into a single range line, printed once the streak ends.
+                    var skipStreakStartIndex = -1;
+                    var skipStreakCount = 0;
+
+                    void FlushSkipStreak()
+                    {
+                        if (skipStreakCount == 0)
+                        {
+                            return;
+                        }
+
+                        if (skipStreakCount == 1)
+                        {
+                            Console.WriteLine("[{0}/{1}] app {2} - already completed, skipping", skipStreakStartIndex + 1, appsToProcess.Count, appsToProcess[skipStreakStartIndex]);
+                        }
+                        else
+                        {
+                            Console.WriteLine("[{0}-{1}/{2}] already completed, skipping ({3} apps)", skipStreakStartIndex + 1, skipStreakStartIndex + skipStreakCount, appsToProcess.Count, skipStreakCount);
+                        }
+
+                        skipStreakCount = 0;
+                    }
+
                     // Ctrl+C during a large batch shouldn't kill the process mid-app and lose that app's progress.
                     // Instead it requests a stop after the current app finishes; success.txt already has everything
                     // up to that point, so re-running the same command later picks up right where this left off.
@@ -393,10 +418,17 @@ namespace DepotDownloader
 
                             if (isBatch && completedAppIds.Contains(currentAppId))
                             {
-                                Console.WriteLine("[{0}/{1}] app {2} - already completed, skipping", i + 1, appsToProcess.Count, currentAppId);
+                                if (skipStreakCount == 0)
+                                {
+                                    skipStreakStartIndex = i;
+                                }
+
+                                skipStreakCount++;
                                 succeededCount++;
                                 continue;
                             }
+
+                            FlushSkipStreak();
 
                             if (isBatch)
                             {
@@ -435,20 +467,35 @@ namespace DepotDownloader
                                 // codebase has no Ctrl+C/global token), so batching treats it as a per-app failure
                                 // like ContentDownloaderException, not a reason to abort the rest of the list.
                                 failedCount++;
-                                consecutiveFailures++;
                                 Console.WriteLine("Skipping app {0}: {1}", currentAppId, ex.Message);
 
-                                // A handful of apps failing back to back usually isn't bad luck on individual apps -
-                                // it's Steam throttling this session. Stop the same way Ctrl+C does (finish cleanly,
-                                // keep success.txt) instead of burning through the rest of the list the same way.
-                                if (consecutiveFailures >= ConsecutiveFailureThrottleThreshold && !stopRequested.IsCancellationRequested)
+                                // Only a manifest download that exhausted its retry cap on repeated transient errors
+                                // (ServiceUnavailable, timeouts) counts as throttling evidence. A clean rejection
+                                // (not owned, delisted, region-locked) means Steam answered fine - that's routine and
+                                // resets the streak rather than adding to it.
+                                if (ex is ManifestRetryExhaustedException)
                                 {
-                                    Console.WriteLine();
-                                    Console.WriteLine("{0} apps in a row failed - this usually means Steam is throttling this session. Stopping here; re-run the same command later to continue.", consecutiveFailures);
-                                    stopRequested.Cancel();
+                                    consecutiveFailures++;
+
+                                    // A handful of apps failing this way back to back usually isn't bad luck on
+                                    // individual apps - it's Steam throttling this session. Stop the same way Ctrl+C
+                                    // does (finish cleanly, keep success.txt) instead of burning through the rest of
+                                    // the list against a throttle that won't lift mid-run.
+                                    if (consecutiveFailures >= ConsecutiveFailureThrottleThreshold && !stopRequested.IsCancellationRequested)
+                                    {
+                                        Console.WriteLine();
+                                        Console.WriteLine("{0} apps in a row failed to download a manifest - this usually means Steam is throttling this session. Stopping here; re-run the same command later to continue.", consecutiveFailures);
+                                        stopRequested.Cancel();
+                                    }
+                                }
+                                else
+                                {
+                                    consecutiveFailures = 0;
                                 }
                             }
                         }
+
+                        FlushSkipStreak();
                     }
                     catch (Exception e)
                     {

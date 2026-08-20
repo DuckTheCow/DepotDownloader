@@ -64,10 +64,19 @@ single authenticated session.
   not change retry behavior for normal transient errors, it only stops an
   indefinite retry loop. When the cap is hit, that app is marked failed and
   is not added to `success.txt`, the same as any other failure.
-- If 5 apps in a row fail (a constant in `Program.cs`, not a command-line
+- If 5 apps in a row fail specifically because their manifest download hit
+  the retry cap above (a constant in `Program.cs`, not a command-line
   option), the batch assumes Steam is throttling the session and stops
   itself the same way Ctrl+C does: finish cleanly, keep `success.txt`,
-  print a message, exit. Re-run the same command later to continue.
+  print a message, exit. Re-run the same command later to continue. A
+  clean rejection (app not owned, delisted, region-locked) does not count
+  toward this and resets the streak, since it means Steam is answering
+  normally, just saying no to that specific app.
+- When resuming a batch where most apps are already in `success.txt`, the
+  "already completed, skipping" line is not printed once per app. Runs of
+  consecutive skips are collapsed into a single line covering the whole
+  range once a non-skipped app is reached (or the batch ends), so the
+  terminal isn't flooded with lines for apps that need no attention.
 
 ## File format
 
