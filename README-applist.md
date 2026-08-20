@@ -1,14 +1,13 @@
 # `-applist` (local patch, not upstream)
 
-> **Heads up: this patch was written by an AI, not reviewed line-by-line by
-> a human, and never built or run by the AI that wrote most of it.** Treat it
-> as a rough, "good enough for one person's use" hack, not tested or
-> maintained software. It's for personal use on your own machine only —
-> don't redistribute it or rely on it for anything that matters. Nothing
-> here is guaranteed to work correctly, and there's no support, no warranty,
-> and no promise it won't eat your Steam account's standing, corrupt output,
-> or just be wrong in some way nobody's caught yet. Read the diff before you
-> trust it, and expect to have to fix things yourself.
+This patch was written by an AI. It has not been reviewed line by line by
+a human, and has not been built or run by the AI that wrote most of it. It
+is an unreviewed, untested modification, made for one person's private use,
+not maintained software. Do not redistribute it. Do not rely on it for
+anything that matters. There is no guarantee it works, no warranty, and no
+support. It may produce incorrect output, misbehave, or affect the standing
+of the Steam account it runs under, in ways not yet identified. Read the
+diff before using it.
 
 ## Why
 
