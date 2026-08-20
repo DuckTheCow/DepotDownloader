@@ -1,5 +1,15 @@
 # `-applist` (local patch, not upstream)
 
+> **Heads up: this patch was written by an AI, not reviewed line-by-line by
+> a human, and never built or run by the AI that wrote most of it.** Treat it
+> as a rough, "good enough for one person's use" hack, not tested or
+> maintained software. It's for personal use on your own machine only —
+> don't redistribute it or rely on it for anything that matters. Nothing
+> here is guaranteed to work correctly, and there's no support, no warranty,
+> and no promise it won't eat your Steam account's standing, corrupt output,
+> or just be wrong in some way nobody's caught yet. Read the diff before you
+> trust it, and expect to have to fix things yourself.
+
 ## Why
 
 DepotDownloader normally takes one `-app` per process, and each process
