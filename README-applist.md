@@ -27,6 +27,20 @@ single authenticated session.
   skipped with a message; the run continues with the rest of the list. A
   summary line at the end reports how many succeeded/failed and how long the
   batch took. Exit code is `1` only if every app in the list failed.
+- When batching, a `<dir>/success.txt` file tracks which app IDs have
+  already completed successfully. On startup, any app already listed there
+  is skipped entirely — before any Steam API call is made for it, not just
+  before the file download. This matters for resuming a large, interrupted
+  batch: even when a manifest is already cached on disk, DepotDownloader
+  still has to call Steam for that app's app info and every depot's
+  decryption key before it can check the local cache (this is normal
+  DepotDownloader behavior, not specific to this patch). Re-running a batch without
+  `success.txt` support would repeat those calls for every already-done app
+  every time; `success.txt` skips them outright. Each app is appended to
+  `success.txt` the moment it finishes successfully (whether its manifest
+  was freshly downloaded or already on disk), so a first pass over an
+  already-fully-cached directory will populate the file, and every pass
+  after that gets faster and lighter on Steam's API.
 
 ## File format
 

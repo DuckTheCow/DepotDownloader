@@ -343,11 +343,30 @@ namespace DepotDownloader
                     var failedCount = 0;
                     var stopwatch = isBatch ? Stopwatch.StartNew() : null;
 
+                    // success.txt records apps that have already completed in a previous -applist run, so a resumed
+                    // batch can skip them before making any Steam API call at all, instead of only after paying for
+                    // RequestAppInfo/RequestDepotKey and finding the manifest already on disk.
+                    var successFilePath = Path.Combine(baseInstallDir, "success.txt");
+                    var completedAppIds = new HashSet<uint>();
+
+                    if (isBatch)
+                    {
+                        Directory.CreateDirectory(baseInstallDir);
+                        completedAppIds = await LoadCompletedAppsAsync(successFilePath);
+                    }
+
                     try
                     {
                         for (var i = 0; i < appsToProcess.Count; i++)
                         {
                             var currentAppId = appsToProcess[i];
+
+                            if (isBatch && completedAppIds.Contains(currentAppId))
+                            {
+                                Console.WriteLine("[{0}/{1}] app {2} - already completed, skipping", i + 1, appsToProcess.Count, currentAppId);
+                                succeededCount++;
+                                continue;
+                            }
 
                             if (isBatch)
                             {
@@ -363,6 +382,11 @@ namespace DepotDownloader
 
                                 await ContentDownloader.DownloadAppAsync(currentAppId, new List<(uint depotId, ulong manifestId)>(depotManifestIds), branch, os, arch, language, lv, isUGC).ConfigureAwait(false);
                                 succeededCount++;
+
+                                if (isBatch)
+                                {
+                                    await File.AppendAllLinesAsync(successFilePath, [currentAppId.ToString()]);
+                                }
                             }
                             catch (Exception ex) when (
                                 ex is ContentDownloaderException
@@ -563,6 +587,40 @@ namespace DepotDownloader
                 var field = line.Split(',')[0].Trim();
 
                 if (uint.TryParse(field, out var id) && seen.Add(id))
+                {
+                    result.Add(id);
+                }
+            }
+
+            return result;
+        }
+
+        static async Task<HashSet<uint>> LoadCompletedAppsAsync(string path)
+        {
+            var result = new HashSet<uint>();
+
+            if (!File.Exists(path))
+            {
+                return result;
+            }
+
+            string[] lines;
+
+            try
+            {
+                lines = await File.ReadAllLinesAsync(path);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Warning: Unable to read '{0}': {1}", path, ex.Message);
+                return result;
+            }
+
+            foreach (var rawLine in lines)
+            {
+                var line = rawLine.Trim();
+
+                if (line.Length > 0 && uint.TryParse(line, out var id))
                 {
                     result.Add(id);
                 }
