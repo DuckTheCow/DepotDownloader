@@ -10,6 +10,7 @@ using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using SteamKit2;
 using SteamKit2.CDN;
@@ -349,16 +350,43 @@ namespace DepotDownloader
                     var successFilePath = Path.Combine(baseInstallDir, "success.txt");
                     var completedAppIds = new HashSet<uint>();
 
+                    // Ctrl+C during a large batch shouldn't kill the process mid-app and lose that app's progress.
+                    // Instead it requests a stop after the current app finishes; success.txt already has everything
+                    // up to that point, so re-running the same command later picks up right where this left off.
+                    using var stopRequested = new CancellationTokenSource();
+
                     if (isBatch)
                     {
                         Directory.CreateDirectory(baseInstallDir);
                         completedAppIds = await LoadCompletedAppsAsync(successFilePath);
+
+                        Console.CancelKeyPress += (_, e) =>
+                        {
+                            e.Cancel = true;
+
+                            if (!stopRequested.IsCancellationRequested)
+                            {
+                                stopRequested.Cancel();
+                                Console.WriteLine();
+                                Console.WriteLine("Ctrl+C received: finishing the current app, then stopping. Re-run the same command later to continue with the rest of the list.");
+                            }
+                            else
+                            {
+                                Console.WriteLine("Ctrl+C received again: forcing immediate exit.");
+                                Environment.Exit(1);
+                            }
+                        };
                     }
 
                     try
                     {
                         for (var i = 0; i < appsToProcess.Count; i++)
                         {
+                            if (isBatch && stopRequested.IsCancellationRequested)
+                            {
+                                break;
+                            }
+
                             var currentAppId = appsToProcess[i];
 
                             if (isBatch && completedAppIds.Contains(currentAppId))
@@ -421,7 +449,16 @@ namespace DepotDownloader
                     if (isBatch)
                     {
                         stopwatch.Stop();
-                        Console.WriteLine("Processed {0} apps: {1} succeeded, {2} failed in {3}.", appsToProcess.Count, succeededCount, failedCount, stopwatch.Elapsed);
+
+                        if (stopRequested.IsCancellationRequested)
+                        {
+                            var remaining = appsToProcess.Count - succeededCount - failedCount;
+                            Console.WriteLine("Stopped early by user: {0} succeeded, {1} failed, {2} not yet attempted, in {3}.", succeededCount, failedCount, remaining, stopwatch.Elapsed);
+                        }
+                        else
+                        {
+                            Console.WriteLine("Processed {0} apps: {1} succeeded, {2} failed in {3}.", appsToProcess.Count, succeededCount, failedCount, stopwatch.Elapsed);
+                        }
 
                         if (succeededCount == 0)
                         {

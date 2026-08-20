@@ -41,6 +41,14 @@ single authenticated session.
   was freshly downloaded or already on disk), so a first pass over an
   already-fully-cached directory will populate the file, and every pass
   after that gets faster and lighter on Steam's API.
+- When batching, Ctrl+C doesn't kill the process immediately. It finishes
+  the app currently in progress (so that app's `success.txt` entry, if it
+  succeeds, isn't lost), prints a summary of what was done this run, and
+  exits. Press Ctrl+C a second time to force an immediate exit instead.
+  This is meant for the "got throttled, stop, wait it out, resume" workflow:
+  run the batch, Ctrl+C when Steam starts rejecting requests, come back
+  later and run the exact same command again — already-completed apps skip
+  instantly via `success.txt` and it picks back up on the rest of the list.
 
 ## File format
 
