@@ -364,17 +364,25 @@ namespace DepotDownloader
                                 await ContentDownloader.DownloadAppAsync(currentAppId, new List<(uint depotId, ulong manifestId)>(depotManifestIds), branch, os, arch, language, lv, isUGC).ConfigureAwait(false);
                                 succeededCount++;
                             }
-                            catch (ContentDownloaderException ex)
+                            catch (Exception ex) when (
+                                ex is ContentDownloaderException
+                                || ex is OperationCanceledException)
                             {
+                                if (!isBatch)
+                                {
+                                    Console.WriteLine(ex.Message);
+                                    return 1;
+                                }
+
+                                // OperationCanceledException here is always DownloadAppAsync giving up on this app's
+                                // depots (e.g. a 401 on one depot) via its own per-call CancellationTokenSource, not a
+                                // real external cancellation (this codebase has no Ctrl+C/global token), so batching
+                                // treats it as a per-app failure like ContentDownloaderException, not a reason to
+                                // abort the rest of the list.
                                 failedCount++;
                                 Console.WriteLine("Skipping app {0}: {1}", currentAppId, ex.Message);
                             }
                         }
-                    }
-                    catch (OperationCanceledException ex)
-                    {
-                        Console.WriteLine(ex.Message);
-                        return 1;
                     }
                     catch (Exception e)
                     {
