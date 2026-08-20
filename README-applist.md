@@ -58,6 +58,16 @@ single authenticated session.
   run the batch, Ctrl+C when Steam starts rejecting requests, come back
   later and run the exact same command again — already-completed apps skip
   instantly via `success.txt` and it picks back up on the rest of the list.
+- A single depot manifest download retries up to 20 times before giving up
+  on that depot (previously unbounded, so a sustained error like a CDN
+  returning ServiceUnavailable repeatedly could retry forever). This does
+  not change retry behavior for normal transient errors, it only stops an
+  indefinite retry loop. When the cap is hit, that app is marked failed and
+  is not added to `success.txt`, the same as any other failure.
+- If 5 apps in a row fail (a constant in `Program.cs`, not a command-line
+  option), the batch assumes Steam is throttling the session and stops
+  itself the same way Ctrl+C does: finish cleanly, keep `success.txt`,
+  print a message, exit. Re-run the same command later to continue.
 
 ## File format
 

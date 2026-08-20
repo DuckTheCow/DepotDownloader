@@ -342,6 +342,8 @@ namespace DepotDownloader
                         : ContentDownloader.Config.InstallDirectory;
                     var succeededCount = 0;
                     var failedCount = 0;
+                    var consecutiveFailures = 0;
+                    const int ConsecutiveFailureThrottleThreshold = 5;
                     var stopwatch = isBatch ? Stopwatch.StartNew() : null;
 
                     // success.txt records apps that have already completed in a previous -applist run, so a resumed
@@ -410,6 +412,7 @@ namespace DepotDownloader
 
                                 await ContentDownloader.DownloadAppAsync(currentAppId, new List<(uint depotId, ulong manifestId)>(depotManifestIds), branch, os, arch, language, lv, isUGC).ConfigureAwait(false);
                                 succeededCount++;
+                                consecutiveFailures = 0;
 
                                 if (isBatch)
                                 {
@@ -427,12 +430,23 @@ namespace DepotDownloader
                                 }
 
                                 // OperationCanceledException here is always DownloadAppAsync giving up on this app's
-                                // depots (e.g. a 401 on one depot) via its own per-call CancellationTokenSource, not a
-                                // real external cancellation (this codebase has no Ctrl+C/global token), so batching
-                                // treats it as a per-app failure like ContentDownloaderException, not a reason to
-                                // abort the rest of the list.
+                                // depots (e.g. a 401 on one depot, or the per-depot manifest retry cap being hit) via
+                                // its own per-call CancellationTokenSource, not a real external cancellation (this
+                                // codebase has no Ctrl+C/global token), so batching treats it as a per-app failure
+                                // like ContentDownloaderException, not a reason to abort the rest of the list.
                                 failedCount++;
+                                consecutiveFailures++;
                                 Console.WriteLine("Skipping app {0}: {1}", currentAppId, ex.Message);
+
+                                // A handful of apps failing back to back usually isn't bad luck on individual apps -
+                                // it's Steam throttling this session. Stop the same way Ctrl+C does (finish cleanly,
+                                // keep success.txt) instead of burning through the rest of the list the same way.
+                                if (consecutiveFailures >= ConsecutiveFailureThrottleThreshold && !stopRequested.IsCancellationRequested)
+                                {
+                                    Console.WriteLine();
+                                    Console.WriteLine("{0} apps in a row failed - this usually means Steam is throttling this session. Stopping here; re-run the same command later to continue.", consecutiveFailures);
+                                    stopRequested.Cancel();
+                                }
                             }
                         }
                     }
@@ -453,7 +467,7 @@ namespace DepotDownloader
                         if (stopRequested.IsCancellationRequested)
                         {
                             var remaining = appsToProcess.Count - succeededCount - failedCount;
-                            Console.WriteLine("Stopped early by user: {0} succeeded, {1} failed, {2} not yet attempted, in {3}.", succeededCount, failedCount, remaining, stopwatch.Elapsed);
+                            Console.WriteLine("Stopped early: {0} succeeded, {1} failed, {2} not yet attempted, in {3}.", succeededCount, failedCount, remaining, stopwatch.Elapsed);
                         }
                         else
                         {

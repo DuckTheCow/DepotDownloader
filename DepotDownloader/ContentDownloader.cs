@@ -794,9 +794,18 @@ namespace DepotDownloader
                     ulong manifestRequestCode = 0;
                     var manifestRequestCodeExpiration = DateTime.MinValue;
 
+                    // Without a cap this loop retries forever on a sustained error (e.g. the CDN returning
+                    // ServiceUnavailable for every attempt), which in a batch run just hammers Steam indefinitely
+                    // instead of giving up on this one depot. This doesn't change the existing retry behavior below,
+                    // it only bounds how many times it can happen for a single depot before falling through to the
+                    // normal "unable to download manifest" failure path.
+                    const int MaxManifestDownloadAttempts = 20;
+                    var manifestDownloadAttempts = 0;
+
                     do
                     {
                         cts.Token.ThrowIfCancellationRequested();
+                        manifestDownloadAttempts++;
 
                         Server connection = null;
 
@@ -889,11 +898,11 @@ namespace DepotDownloader
                             cdnPool.ReturnBrokenConnection(connection);
                             Console.WriteLine("Encountered error downloading manifest for depot {0} {1}: {2}", depot.DepotId, depot.ManifestId, e.Message);
                         }
-                    } while (newManifest == null);
+                    } while (newManifest == null && manifestDownloadAttempts < MaxManifestDownloadAttempts);
 
                     if (newManifest == null)
                     {
-                        Console.WriteLine("\nUnable to download manifest {0} for depot {1}", depot.ManifestId, depot.DepotId);
+                        Console.WriteLine("\nUnable to download manifest {0} for depot {1} after {2} attempts", depot.ManifestId, depot.DepotId, manifestDownloadAttempts);
                         cts.Cancel();
                     }
 
