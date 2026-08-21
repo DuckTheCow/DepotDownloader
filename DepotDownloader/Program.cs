@@ -405,6 +405,35 @@ namespace DepotDownloader
                         };
                     }
 
+                    // Only a manifest download that exhausted its retry cap on repeated transient errors
+                    // (ServiceUnavailable, timeouts - see ContentDownloader.ThrottleSignalCount) counts as
+                    // throttling evidence. A clean per-app rejection (not owned, delisted, region-locked) means
+                    // Steam answered fine, so it resets the streak instead of adding to it. This is checked after
+                    // every app, success or failure, since an app can succeed overall while one of its depots (e.g.
+                    // a shared/proxied depot from an unrelated, defunct app) still hit the retry cap.
+                    void CheckThrottleSignal(int throttleSignalCountBefore)
+                    {
+                        if (ContentDownloader.ThrottleSignalCount > throttleSignalCountBefore)
+                        {
+                            consecutiveFailures++;
+
+                            // A handful of apps hitting this back to back usually isn't bad luck on individual
+                            // depots - it's Steam throttling this session. Stop the same way Ctrl+C does (finish
+                            // cleanly, keep success.txt) instead of burning through the rest of the list against a
+                            // throttle that won't lift mid-run.
+                            if (consecutiveFailures >= ConsecutiveFailureThrottleThreshold && !stopRequested.IsCancellationRequested)
+                            {
+                                Console.WriteLine();
+                                Console.WriteLine("{0} apps in a row hit repeated manifest download errors - this usually means Steam is throttling this session. Stopping here; re-run the same command later to continue.", consecutiveFailures);
+                                stopRequested.Cancel();
+                            }
+                        }
+                        else
+                        {
+                            consecutiveFailures = 0;
+                        }
+                    }
+
                     try
                     {
                         for (var i = 0; i < appsToProcess.Count; i++)
@@ -436,6 +465,8 @@ namespace DepotDownloader
                                 ContentDownloader.Config.InstallDirectory = Path.Combine(baseInstallDir, currentAppId.ToString());
                             }
 
+                            var throttleSignalCountBefore = ContentDownloader.ThrottleSignalCount;
+
                             try
                             {
                                 // DepotConfigStore.Instance is a static singleton that refuses to load twice, so it must be
@@ -444,10 +475,10 @@ namespace DepotDownloader
 
                                 await ContentDownloader.DownloadAppAsync(currentAppId, new List<(uint depotId, ulong manifestId)>(depotManifestIds), branch, os, arch, language, lv, isUGC).ConfigureAwait(false);
                                 succeededCount++;
-                                consecutiveFailures = 0;
 
                                 if (isBatch)
                                 {
+                                    CheckThrottleSignal(throttleSignalCountBefore);
                                     await File.AppendAllLinesAsync(successFilePath, [currentAppId.ToString()]);
                                 }
                             }
@@ -462,36 +493,12 @@ namespace DepotDownloader
                                 }
 
                                 // OperationCanceledException here is always DownloadAppAsync giving up on this app's
-                                // depots (e.g. a 401 on one depot, or the per-depot manifest retry cap being hit) via
-                                // its own per-call CancellationTokenSource, not a real external cancellation (this
-                                // codebase has no Ctrl+C/global token), so batching treats it as a per-app failure
-                                // like ContentDownloaderException, not a reason to abort the rest of the list.
+                                // depots via its own per-call CancellationTokenSource, not a real external
+                                // cancellation (this codebase has no Ctrl+C/global token), so batching treats it as
+                                // a per-app failure like ContentDownloaderException, not a reason to abort the list.
                                 failedCount++;
                                 Console.WriteLine("Skipping app {0}: {1}", currentAppId, ex.Message);
-
-                                // Only a manifest download that exhausted its retry cap on repeated transient errors
-                                // (ServiceUnavailable, timeouts) counts as throttling evidence. A clean rejection
-                                // (not owned, delisted, region-locked) means Steam answered fine - that's routine and
-                                // resets the streak rather than adding to it.
-                                if (ex is ManifestRetryExhaustedException)
-                                {
-                                    consecutiveFailures++;
-
-                                    // A handful of apps failing this way back to back usually isn't bad luck on
-                                    // individual apps - it's Steam throttling this session. Stop the same way Ctrl+C
-                                    // does (finish cleanly, keep success.txt) instead of burning through the rest of
-                                    // the list against a throttle that won't lift mid-run.
-                                    if (consecutiveFailures >= ConsecutiveFailureThrottleThreshold && !stopRequested.IsCancellationRequested)
-                                    {
-                                        Console.WriteLine();
-                                        Console.WriteLine("{0} apps in a row failed to download a manifest - this usually means Steam is throttling this session. Stopping here; re-run the same command later to continue.", consecutiveFailures);
-                                        stopRequested.Cancel();
-                                    }
-                                }
-                                else
-                                {
-                                    consecutiveFailures = 0;
-                                }
+                                CheckThrottleSignal(throttleSignalCountBefore);
                             }
                         }
 

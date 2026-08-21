@@ -20,14 +20,6 @@ namespace DepotDownloader
     {
     }
 
-    // Thrown specifically when a depot manifest download exhausts its retry cap (repeated transient errors like
-    // ServiceUnavailable or timeouts), as opposed to a clean rejection (401/403/404, no access). A subtype of
-    // ContentDownloaderException so it's caught by the same handlers without any change to their catch clauses;
-    // callers that care about the distinction can check for this specific type.
-    class ManifestRetryExhaustedException(string value) : ContentDownloaderException(value)
-    {
-    }
-
     static class ContentDownloader
     {
         public const uint INVALID_APP_ID = uint.MaxValue;
@@ -36,6 +28,12 @@ namespace DepotDownloader
         public const string DEFAULT_BRANCH = "public";
 
         public static DownloadConfig Config = new();
+
+        // Incremented whenever a depot manifest download exhausts its retry cap on repeated transient errors
+        // (ServiceUnavailable, timeouts), as opposed to a clean rejection (401/403/404, no access). Manifest
+        // processing is sequential per app, not parallel, so a plain counter is enough. Callers (Program.cs) use
+        // this as a "Steam is probably throttling this session" signal.
+        public static int ThrottleSignalCount;
 
         private static Steam3Session steam3;
         private static CDNClientPool cdnPool;
@@ -842,11 +840,10 @@ namespace DepotDownloader
                                 // This code will hopefully be valid for one period following the issuing period
                                 manifestRequestCodeExpiration = now.Add(TimeSpan.FromMinutes(5));
 
-                                // If we could not get the manifest code, this is a fatal error
-                                if (manifestRequestCode == 0)
-                                {
-                                    cts.Cancel();
-                                }
+                                // If we could not get the manifest code, this depot can't be downloaded (already
+                                // logged by GetDepotManifestRequestCodeAsync); the download attempt below will fail
+                                // too, and the loop/post-loop handling deals with that, so there's nothing more to
+                                // do here.
                             }
 
                             DebugLog.WriteLine("ContentDownloader",
@@ -910,23 +907,27 @@ namespace DepotDownloader
 
                     if (newManifest == null)
                     {
+                        // A depot that can't be fetched (permanently rejected, or a proxied/shared depot from
+                        // an app this account has no standing with, or repeated transient errors) shouldn't cost
+                        // the manifests already fetched for every other depot in this app - skip just this depot
+                        // and let the caller carry on with the rest, the same way an ownership check failure does.
+                        //
                         // Reaching the attempt cap (rather than an early break on 401/403/404) means every attempt
-                        // failed with a transient error like ServiceUnavailable or a timeout - that specific case is
-                        // what a caller can treat as "Steam is probably throttling us", as opposed to a clean,
-                        // unrecoverable rejection for this depot.
+                        // failed with a transient error like ServiceUnavailable or a timeout, which is treated as
+                        // a signal that Steam is probably throttling this session, as opposed to a clean,
+                        // unrecoverable rejection for this specific depot.
                         if (manifestDownloadAttempts >= MaxManifestDownloadAttempts)
                         {
-                            Console.WriteLine("\nGiving up on manifest {0} for depot {1} after {2} attempts.", depot.ManifestId, depot.DepotId, manifestDownloadAttempts);
-                            cts.Cancel();
-                            throw new ManifestRetryExhaustedException(string.Format("Depot {0} manifest download failed after {1} attempts.", depot.DepotId, manifestDownloadAttempts));
+                            Console.WriteLine("\nGiving up on manifest {0} for depot {1} after {2} attempts, skipping this depot.", depot.ManifestId, depot.DepotId, manifestDownloadAttempts);
+                            ThrottleSignalCount++;
+                        }
+                        else
+                        {
+                            Console.WriteLine("\nUnable to download manifest {0} for depot {1}, skipping this depot.", depot.ManifestId, depot.DepotId);
                         }
 
-                        Console.WriteLine("\nUnable to download manifest {0} for depot {1}", depot.ManifestId, depot.DepotId);
-                        cts.Cancel();
+                        return null;
                     }
-
-                    // Throw the cancellation exception if requested so that this task is marked failed
-                    cts.Token.ThrowIfCancellationRequested();
 
                     Util.SaveManifestToFile(configDir, newManifest);
                 }
